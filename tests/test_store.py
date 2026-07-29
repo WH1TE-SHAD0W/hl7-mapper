@@ -4,9 +4,9 @@ The distinct-path table is what makes path search fast, so the properties the
 search engine relies on are pinned here.
 """
 
-from sickcert.model import FieldRow
-from sickcert.search import SearchEngine
-from sickcert.store import Dataset
+from hl7msg.model import FieldRow
+from hl7msg.search import SearchEngine
+from hl7msg.store import Dataset
 
 
 def row(path: str, value: str, numeric: str = "") -> FieldRow:

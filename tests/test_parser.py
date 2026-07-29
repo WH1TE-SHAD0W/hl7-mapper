@@ -2,7 +2,7 @@
 
 import pytest
 
-from sickcert.parser import NotHL7XmlError, parse_bytes, parse_file
+from hl7msg.parser import NotHL7XmlError, parse_bytes, parse_file
 
 
 def paths(rows):

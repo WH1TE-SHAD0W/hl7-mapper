@@ -1,19 +1,25 @@
-# Sick Certificate Data Explorer
+# HL7 Message Data Explorer
 
-A single-user desktop tool for reviewing HL7 v2 ORU_R01 sick-certificate
-messages delivered as XML. It replaces the manual Excel workbook
-(`Sick_Cert_Data_Analysis.xlsx`, MasterFile sheet) in which each message was
-flattened by hand into helper columns and filtered with AutoFilter/Slicers.
+A single-user desktop tool for reviewing HL7 v2 messages delivered as XML. It
+replaces the manual Excel workbook (`Sick_Cert_Data_Analysis.xlsx`, MasterFile
+sheet) in which each message was flattened by hand into helper columns and
+filtered with AutoFilter/Slicers.
 
 Load one or more messages, type either an HL7 path or a piece of text, and
-every matching field across every loaded message is listed.
+every matching field across every loaded message is listed — then export the
+result to Excel.
+
+Nothing in the parser or search engine is tied to a particular message type.
+The original brief covered sick certificates (`ORU_R01`), but the real corpus
+also contains `REF_I12` referrals and `ORM_O01` orders, and all three flatten
+through the same rules.
 
 ## Status
 
 MVP, per the High-Level Design. Implemented: ingestion, flattening, the
-search engine, and the desktop UI. Not yet implemented (Phase 2 in the HLD):
-the Field Dictionary of business field names, the slicer panel, SQLite
-persistence, and CSV/Excel export.
+search engine, the desktop UI, Excel export, and a packaged Windows
+executable. Not yet implemented (Phase 2 in the HLD): the Field Dictionary of
+business field names, the slicer panel, SQLite persistence, and CSV export.
 
 Validated against a real corpus of 909 anonymized messages: 836 parsed into
 393,255 rows across 224 distinct paths, with every field named in the HLD
@@ -68,6 +74,36 @@ a surprising result is always explainable.
 Results are capped at 500 displayed rows; the status line reports the true
 total.
 
+## Exporting
+
+**Export to Excel…** writes the current result set to an `.xlsx` workbook.
+
+It exports **every match, not the 500 rows on screen** — the display cap is a
+limit of the table widget, not of the data. Searching `CE.2` on the real
+corpus shows 500 rows and exports 58,709.
+
+The *Results* sheet carries all six fields per row — File, Path, Value, Full
+Path, Numeric Path, Depth — with the header frozen and AutoFilter already
+switched on, since filtering is the usual next step. A second *Export Info*
+sheet records the query, which rule matched it, the row count, the timestamp
+and the source file names, so an extract can be traced back to how it was
+produced.
+
+Values are always written as literal text. openpyxl otherwise treats a
+leading `=` as a formula, and these values come from third-party messages —
+a field reading `=1+1` must stay `=1+1`. Control characters Excel rejects are
+stripped; tabs and newlines in clinical narrative are kept.
+
+Measured on the full corpus:
+
+| Export | Rows | Time | Size |
+|---|---|---|---|
+| `OBR.4.CE.2` | 7,455 | 0.5s | 0.2 MB |
+| `CE.2` | 58,709 | 3.7s | 2.0 MB |
+| everything (blank query) | 393,255 | 25s | 12.3 MB |
+
+Writing runs off the UI thread, so the window stays responsive.
+
 ## How paths are built
 
 HL7 XML repeats each parent's name in its children, so the raw tag chain for a
@@ -86,17 +122,18 @@ indices on repeated segments).
 ## Layout
 
 ```
-src/sickcert/
+src/hl7msg/
   model.py      FieldRow - one row per XML leaf node
   pathspec.py   tag-chain collapsing; path-spec detection and matching
   parser.py     HL7 XML -> rows, with per-file validation
   search.py     the four-branch search engine
   store.py      in-memory Dataset + search index (the Phase 2 SQLite seam)
+  export.py     filtered results -> .xlsx
   ui/app.py     Flet desktop UI - the only module that imports flet
 ```
 
-Only `ui/app.py` depends on Flet. Everything else is standard library, which
-is why the whole engine is testable without a GUI.
+Only `ui/app.py` depends on Flet. Everything else is standard library plus
+openpyxl, which is why the whole engine is testable without a GUI.
 
 ## Tests
 
@@ -104,10 +141,10 @@ is why the whole engine is testable without a GUI.
 .venv\Scripts\python.exe -m pytest -q
 ```
 
-92 tests covering the collapsing rules, parsing (including mixed content),
-all four search branches, the dataset index, UI wiring driven through a stub
-page, and a benchmark asserting search stays under the HLD's one-second
-budget at 50,000 rows.
+128 tests covering the collapsing rules, parsing (including mixed content),
+all four search branches, the dataset index, Excel export (read back from the
+written workbooks), UI wiring driven through a stub page, and a benchmark
+asserting search stays under the HLD's one-second budget at 50,000 rows.
 
 ## Corpus findings
 
@@ -156,14 +193,62 @@ file by name in the status line and loads the rest; it deliberately does not
 attempt partial recovery, since silently ingesting a truncated message would
 undermine an audit tool.
 
-## Packaging
+## Building the executable
+
+Install the build-time extras once — they are not runtime dependencies:
 
 ```bash
-.venv\Scripts\python.exe -m flet pack main.py --name SickCertExplorer
+.venv\Scripts\python.exe -m pip install flet-cli==0.86.4 pyinstaller
 ```
 
-Produces a standalone Windows executable so end users need no Python install.
-Not yet verified on a clean machine.
+Then:
+
+```bash
+.\build_exe.ps1
+```
+
+Produces `dist\HL7MessageExplorer.exe`, a single self-contained file (~58 MB)
+that needs no Python installation. Verified by running it from a directory
+containing no source tree.
+
+Three traps are worth knowing before changing [build_exe.ps1](build_exe.ps1):
+
+**`--paths=src` is mandatory.** `hl7msg` lives under `src/` and is only
+importable because `main.py` adds that directory to `sys.path` at runtime.
+PyInstaller resolves imports statically, long before that line executes, so
+without it the build *succeeds* and produces an exe that dies instantly with
+`ModuleNotFoundError`.
+
+**Only one pass-through argument is possible.** `flet pack`'s
+`--pyinstaller-build-args` uses `nargs="*"`, and argparse rejects a value
+starting with `-` unless attached with `=`. Passing two
+(`--pyinstaller-build-args="--paths=src --exclude-module=x"`) hands PyInstaller
+a single nonsense path named `src --exclude-module=x`; the build reports
+success and yields a broken 9 MB executable.
+
+**Trim the environment, not the build.** Because of the above, the way to
+shrink the bundle is to uninstall what you do not want before building.
+`flet[desktop]` also installs `flet-web`, which pulls fastapi, starlette,
+uvicorn, websockets and pydantic into the exe even though a packaged desktop
+app never serves HTTP. Removing them is safe and saves ~5 MB:
+
+```bash
+.venv\Scripts\python.exe -m pip uninstall -y flet-web fastapi starlette uvicorn websockets pydantic pydantic-core
+```
+
+Most of the remaining size is the bundled Flutter engine, which is not
+optional.
+
+To confirm a build really contains the application code:
+
+```bash
+.venv\Scripts\python.exe -c "from PyInstaller.archive.readers import CArchiveReader; print(len(CArchiveReader(r'dist\HL7MessageExplorer.exe').toc))"
+```
+
+Pure-Python packages live inside the embedded PYZ archive, *not* in the
+`_MEI` folder the onefile exe unpacks at runtime — only binaries and data
+files land there. Looking for `hl7msg` in `_MEI` will always suggest, wrongly,
+that it is missing.
 
 ## Notes on Flet
 

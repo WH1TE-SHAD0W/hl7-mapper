@@ -6,7 +6,7 @@ pin the notation analysts already read in the workbook.
 
 import pytest
 
-from sickcert.pathspec import (
+from hl7msg.pathspec import (
     collapse_tags,
     is_group_tag,
     is_path_spec,

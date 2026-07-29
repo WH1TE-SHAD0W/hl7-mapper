@@ -4,8 +4,8 @@ import time
 
 import pytest
 
-from sickcert.model import FieldRow
-from sickcert.search import (
+from hl7msg.model import FieldRow
+from hl7msg.search import (
     MODE_ALL,
     MODE_NONE,
     MODE_PATH,
@@ -13,7 +13,7 @@ from sickcert.search import (
     MODE_VALUE,
     SearchEngine,
 )
-from sickcert.store import Dataset
+from hl7msg.store import Dataset
 
 
 @pytest.fixture

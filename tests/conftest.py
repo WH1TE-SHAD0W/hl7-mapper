@@ -2,8 +2,8 @@ from pathlib import Path
 
 import pytest
 
-from sickcert.parser import parse_file
-from sickcert.store import Dataset
+from hl7msg.parser import parse_file
+from hl7msg.store import Dataset
 
 FIXTURES = Path(__file__).parent / "fixtures"
 SAMPLE = FIXTURES / "sample_oru_r01.xml"
