@@ -1,0 +1,126 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  TEMPORARY SYNTHETIC FIXTURE - NOT REAL PATIENT DATA.
+
+  Hand-written against the standard HL7 v2.x XML encoding to exercise every
+  field named in HLD 5.3 while the real anonymized ORU_R01 sample is awaited.
+  All names, identifiers and facilities below are invented.
+
+  Replace this file with the real anonymized message once supplied, then
+  re-run tests/test_parser.py to confirm the collapsing rules hold against
+  the true message structure.
+-->
+<ORU_R01 xmlns="urn:hl7-org:v2xml">
+  <MSH>
+    <MSH.1>|</MSH.1>
+    <MSH.2>^~\&amp;</MSH.2>
+    <MSH.3>
+      <HD.1>SICKCERT</HD.1>
+    </MSH.3>
+    <MSH.4>
+      <HD.1>RIVERSIDE MEDICAL PRACTICE</HD.1>
+      <HD.2>RMP001</HD.2>
+    </MSH.4>
+    <MSH.5>
+      <HD.1>DSP</HD.1>
+    </MSH.5>
+    <MSH.7>
+      <TS.1>20260714093000</TS.1>
+    </MSH.7>
+    <MSH.9>
+      <MSG.1>ORU</MSG.1>
+      <MSG.2>R01</MSG.2>
+      <MSG.3>ORU_R01</MSG.3>
+    </MSH.9>
+    <MSH.10>CERT-2026-0007741</MSH.10>
+    <MSH.11>
+      <PT.1>P</PT.1>
+    </MSH.11>
+    <MSH.12>
+      <VID.1>2.4</VID.1>
+    </MSH.12>
+  </MSH>
+  <ORU_R01.PATIENT_RESULT>
+    <ORU_R01.PATIENT>
+      <PID>
+        <PID.1>1</PID.1>
+        <PID.3>
+          <CX.1>1234567FA</CX.1>
+          <CX.5>PPSN</CX.5>
+        </PID.3>
+        <PID.5>
+          <XPN.1>
+            <FN.1>OCONNELL</FN.1>
+          </XPN.1>
+          <XPN.2>MAIRE</XPN.2>
+        </PID.5>
+        <PID.7>
+          <TS.1>19780312</TS.1>
+        </PID.7>
+        <PID.8>F</PID.8>
+      </PID>
+      <ORU_R01.VISIT>
+        <PV1>
+          <PV1.1>1</PV1.1>
+          <PV1.2>O</PV1.2>
+          <PV1.7>
+            <XCN.1>MC44219</XCN.1>
+            <XCN.2>
+              <FN.1>WALSH</FN.1>
+            </XCN.2>
+            <XCN.3>DECLAN</XCN.3>
+          </PV1.7>
+        </PV1>
+      </ORU_R01.VISIT>
+    </ORU_R01.PATIENT>
+    <ORU_R01.ORDER_OBSERVATION>
+      <OBR>
+        <OBR.1>1</OBR.1>
+        <OBR.4>
+          <CE.1>E03.9</CE.1>
+          <CE.2>Thyroid disorder, unspecified</CE.2>
+          <CE.3>ICD10</CE.3>
+        </OBR.4>
+        <OBR.7>
+          <TS.1>20260714</TS.1>
+        </OBR.7>
+      </OBR>
+      <ORU_R01.OBSERVATION>
+        <OBX>
+          <OBX.1>1</OBX.1>
+          <OBX.2>CE</OBX.2>
+          <OBX.3>
+            <CE.1>E03.9</CE.1>
+            <CE.2>Thyroid disorder, unspecified</CE.2>
+          </OBX.3>
+          <OBX.5>PRIMARY</OBX.5>
+          <OBX.11>F</OBX.11>
+        </OBX>
+      </ORU_R01.OBSERVATION>
+      <ORU_R01.OBSERVATION>
+        <OBX>
+          <OBX.1>2</OBX.1>
+          <OBX.2>CE</OBX.2>
+          <OBX.3>
+            <CE.1>M54.5</CE.1>
+            <CE.2>Low back pain</CE.2>
+          </OBX.3>
+          <OBX.5>SECONDARY</OBX.5>
+          <OBX.11>F</OBX.11>
+        </OBX>
+      </ORU_R01.OBSERVATION>
+      <ORU_R01.OBSERVATION>
+        <OBX>
+          <OBX.1>3</OBX.1>
+          <OBX.2>ST</OBX.2>
+          <OBX.3>
+            <CE.1>CERTDAYS</CE.1>
+            <CE.2>Certified days absent</CE.2>
+          </OBX.3>
+          <OBX.5>14</OBX.5>
+          <OBX.11>F</OBX.11>
+        </OBX>
+      </ORU_R01.OBSERVATION>
+    </ORU_R01.ORDER_OBSERVATION>
+  </ORU_R01.PATIENT_RESULT>
+</ORU_R01>

@@ -1,0 +1,16 @@
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+build/
+dist/
+*.egg-info/
+storage/
+.idea/
+.vscode/
+
+# Never commit real patient data. Only the reviewed, anonymized fixture
+# under tests/fixtures/ is allowed into the repo.
+data/
+*.hl7
