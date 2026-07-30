@@ -14,7 +14,19 @@ import asyncio
 
 import flet as ft
 
-from ..export import ExportError, suggested_filename, write_xlsx
+from ..correlate import (
+    CorrelatedTable,
+    CorrelationEngine,
+    FilterSet,
+    Projection,
+    ProjectionError,
+)
+from ..export import (
+    ExportError,
+    suggested_filename,
+    write_correlated_xlsx,
+    write_xlsx,
+)
 from ..search import SearchEngine, SearchResult
 from ..store import Dataset, LoadResult
 
@@ -24,6 +36,10 @@ from ..store import Dataset, LoadResult
 MAX_DISPLAYED_ROWS = 500
 
 _COLUMN_WIDTHS = {"file": 210, "path": 230, "value": 540}
+
+#: Correlated tables have a variable number of columns, so each gets a fixed
+#: share rather than a hand-tuned width.
+_CORRELATED_COLUMN_WIDTH = 210
 
 
 class ExplorerApp:
@@ -70,6 +86,40 @@ class ExplorerApp:
             expand=True,
         )
 
+        # -- correlated view ---------------------------------------------
+        self.correlator = CorrelationEngine(self.dataset)
+
+        # The unfiltered projection, cached so that adjusting a filter does
+        # not rebuild it. Editing the columns box does.
+        self.correlated_table: CorrelatedTable | None = None
+
+        # The single source of truth for filtering. The search box and the
+        # per-column header inputs are two views onto this one mapping.
+        self.column_filters: dict[str, str] = {}
+
+        self.columns_field = ft.TextField(
+            label="Columns",
+            hint_text="HL7 paths separated by spaces — OBX.3.CE.1 OBX.3.CE.2 OBX.5",
+            expand=True,
+            on_submit=self.on_build_table,
+        )
+        self.filter_field = ft.TextField(
+            label="Search",
+            hint_text="PATH: value, per column — OBX.5: Ye   OBX.11: F",
+            expand=True,
+            on_submit=self.on_filter_changed,
+        )
+        self.corr_status = ft.Text(
+            "Enter one or more HL7 paths above, then choose “Build table”.",
+            selectable=True,
+        )
+        self.corr_table = self._build_correlated_table(None)
+        self.corr_results_area = ft.Column(
+            controls=[self.corr_table],
+            scroll=ft.ScrollMode.AUTO,
+            expand=True,
+        )
+
     # -- layout ----------------------------------------------------------
 
     def build(self) -> None:
@@ -96,19 +146,85 @@ class ExplorerApp:
                     ),
                 ]
             ),
-            ft.Row(
-                controls=[
-                    self.search_field,
-                    ft.Button(
-                        "Search",
-                        icon=ft.Icons.SEARCH,
-                        on_click=self.on_search,
-                    ),
-                ]
-            ),
             self.status,
             ft.Divider(),
-            self.results_area,
+            ft.Tabs(
+                length=2,
+                expand=True,
+                content=ft.Column(
+                    expand=True,
+                    controls=[
+                        ft.TabBar(
+                            tabs=[
+                                ft.Tab(label="Find a value", icon=ft.Icons.SEARCH),
+                                ft.Tab(
+                                    label="Correlated table",
+                                    icon=ft.Icons.TABLE_CHART,
+                                ),
+                            ]
+                        ),
+                        ft.TabBarView(
+                            expand=True,
+                            controls=[
+                                self._flat_view(),
+                                self._correlated_view(),
+                            ],
+                        ),
+                    ],
+                ),
+            ),
+        )
+
+    def _flat_view(self) -> ft.Control:
+        """One query, one flat list of File / Path / Value."""
+        return ft.Column(
+            expand=True,
+            controls=[
+                ft.Row(
+                    controls=[
+                        self.search_field,
+                        ft.Button(
+                            "Search", icon=ft.Icons.SEARCH, on_click=self.on_search
+                        ),
+                    ]
+                ),
+                self.results_area,
+            ],
+        )
+
+    def _correlated_view(self) -> ft.Control:
+        """Several paths projected side by side, one row per segment."""
+        return ft.Column(
+            expand=True,
+            controls=[
+                ft.Row(
+                    controls=[
+                        self.columns_field,
+                        ft.Button(
+                            "Build table",
+                            icon=ft.Icons.VIEW_COLUMN,
+                            on_click=self.on_build_table,
+                        ),
+                    ]
+                ),
+                ft.Row(
+                    controls=[
+                        self.filter_field,
+                        ft.Button(
+                            "Filter",
+                            icon=ft.Icons.FILTER_ALT,
+                            on_click=self.on_filter_changed,
+                        ),
+                        ft.Button(
+                            "Export to Excel…",
+                            icon=ft.Icons.TABLE_VIEW,
+                            on_click=self.on_export_correlated,
+                        ),
+                    ]
+                ),
+                self.corr_status,
+                self.corr_results_area,
+            ],
         )
 
     def _build_table(self, rows) -> ft.DataTable:
@@ -146,6 +262,76 @@ class ExplorerApp:
             ],
             column_spacing=24,
             heading_row_height=40,
+        )
+
+    def _build_correlated_table(self, table: CorrelatedTable | None) -> ft.DataTable:
+        """Render a projection, with a filter input under each column heading.
+
+        The heading inputs and the search box are two views of
+        ``self.column_filters``; editing either updates the other.
+        """
+        if table is None or not table.columns:
+            return ft.DataTable(
+                columns=[ft.DataColumn(ft.Text("No table yet"))],
+                rows=[],
+            )
+
+        width = _CORRELATED_COLUMN_WIDTH
+
+        def heading(column: str) -> ft.DataColumn:
+            return ft.DataColumn(
+                ft.Container(
+                    width=width,
+                    content=ft.Column(
+                        spacing=4,
+                        tight=True,
+                        controls=[
+                            ft.Text(
+                                column,
+                                weight=ft.FontWeight.BOLD,
+                                max_lines=1,
+                            ),
+                            ft.TextField(
+                                value=self.column_filters.get(column, ""),
+                                hint_text="filter…",
+                                dense=True,
+                                content_padding=6,
+                                text_size=12,
+                                data=column,
+                                on_submit=self.on_column_filter_changed,
+                                on_blur=self.on_column_filter_changed,
+                            ),
+                        ],
+                    ),
+                )
+            )
+
+        def cell(text: str, marked: bool) -> ft.DataCell:
+            return ft.DataCell(
+                ft.Container(
+                    width=width,
+                    content=ft.Text(
+                        text,
+                        selectable=True,
+                        max_lines=3,
+                        color=ft.Colors.AMBER if marked else None,
+                    ),
+                )
+            )
+
+        return ft.DataTable(
+            columns=[heading(column) for column in table.columns],
+            rows=[
+                ft.DataRow(
+                    cells=[
+                        cell(value, index in row.ambiguous)
+                        for index, value in enumerate(row.cells)
+                    ]
+                )
+                for row in table.rows[:MAX_DISPLAYED_ROWS]
+            ],
+            column_spacing=18,
+            heading_row_height=96,
         )
 
     # -- event handlers --------------------------------------------------
@@ -258,6 +444,111 @@ class ExplorerApp:
             )
         self.page.update()
 
+    # -- correlated table ------------------------------------------------
+
+    async def on_build_table(self, _event: ft.ControlEvent) -> None:
+        """Project the named columns. The expensive half of the two boxes."""
+        if not self.dataset.rows:
+            self.corr_status.value = "No messages loaded yet."
+            self.page.update()
+            return
+
+        text = (self.columns_field.value or "").strip()
+        if not text:
+            self.corr_status.value = (
+                "Name at least one HL7 path, e.g. OBX.3.CE.2 OBX.5"
+            )
+            self.page.update()
+            return
+
+        try:
+            projection = Projection.parse(text).expand(self.dataset)
+            table = await asyncio.to_thread(self.correlator.build, projection)
+        except ProjectionError as exc:
+            self.correlated_table = None
+            self.corr_status.value = f"Cannot build that table: {exc}"
+            self._render_correlated(None)
+            self.page.update()
+            return
+
+        self.correlated_table = table
+        # Drop filters naming columns that are no longer projected.
+        self.column_filters = {
+            column: value
+            for column, value in self.column_filters.items()
+            if column in table.columns
+        }
+        self._sync_filter_field()
+        self._apply_filters()
+        self.page.update()
+
+    async def on_filter_changed(self, _event: ft.ControlEvent) -> None:
+        """Re-filter the cached projection. The cheap half."""
+        if self.correlated_table is None:
+            await self.on_build_table(_event)
+            return
+        parsed = FilterSet.parse(
+            self.filter_field.value or "", self.correlated_table.columns
+        )
+        self.column_filters = dict(parsed.per_column)
+        self._render_correlated(self.correlated_table.apply(parsed))
+        self.corr_status.value = self._describe_correlated(
+            self.correlated_table.apply(parsed), parsed
+        )
+        self.page.update()
+
+    async def on_column_filter_changed(self, event: ft.ControlEvent) -> None:
+        """A filter typed into a column heading."""
+        if self.correlated_table is None:
+            return
+        column = event.control.data
+        value = (event.control.value or "").strip()
+        if value:
+            self.column_filters[column] = value
+        else:
+            self.column_filters.pop(column, None)
+        self._sync_filter_field()
+        self._apply_filters()
+        self.page.update()
+
+    async def on_export_correlated(self, _event: ft.ControlEvent) -> None:
+        table = self._filtered_table()
+        if table is None or not table.rows:
+            self.corr_status.value = "Nothing to export — build a table first."
+            self.page.update()
+            return
+
+        destination = await self.picker.save_file(
+            dialog_title="Export correlated table to Excel",
+            file_name=suggested_filename(self.columns_field.value or "table"),
+            file_type=ft.FilePickerFileType.CUSTOM,
+            allowed_extensions=["xlsx"],
+        )
+        if not destination:
+            return
+
+        total = len(table.rows)
+        self.corr_status.value = f"Exporting {total:,} rows…"
+        self.page.update()
+
+        try:
+            written = await asyncio.to_thread(
+                write_correlated_xlsx,
+                table,
+                destination,
+                columns_text=self.columns_field.value or "",
+                filter_text=self.filter_field.value or "",
+                recovered_files=sorted(self.dataset.recovered_files),
+            )
+        except (ExportError, OSError) as exc:
+            self.corr_status.value = f"Export failed: {exc}"
+        else:
+            self.corr_status.value = (
+                f"Exported {total:,} rows × {len(table.columns)} columns "
+                f"to {written.name}"
+            )
+        self.page.update()
+
     async def on_clear(self, _event: ft.ControlEvent) -> None:
         self.dataset.clear()
         self.search_field.value = ""
@@ -265,6 +556,13 @@ class ExplorerApp:
         self.report_button.disabled = True
         self._render(self.engine.search(""))
         self.status.value = "Cleared. No messages loaded."
+
+        self.correlated_table = None
+        self.column_filters = {}
+        self.columns_field.value = ""
+        self.filter_field.value = ""
+        self._render_correlated(None)
+        self.corr_status.value = "Cleared. No messages loaded."
         self.page.update()
 
     # -- rendering -------------------------------------------------------
@@ -275,6 +573,69 @@ class ExplorerApp:
         self.last_result = result
         self.table = self._build_table(result.rows[:MAX_DISPLAYED_ROWS])
         self.results_area.controls = [self.table]
+
+    def _render_correlated(self, table: CorrelatedTable | None) -> None:
+        self.corr_table = self._build_correlated_table(table)
+        self.corr_results_area.controls = [self.corr_table]
+
+    def _filtered_table(self) -> CorrelatedTable | None:
+        """The cached projection with the current filters applied."""
+        if self.correlated_table is None:
+            return None
+        return self.correlated_table.apply(
+            FilterSet(per_column=dict(self.column_filters))
+        )
+
+    def _sync_filter_field(self) -> None:
+        """Write the filter state back into the search box."""
+        self.filter_field.value = "  ".join(
+            f"{column}: {value}" for column, value in self.column_filters.items()
+        )
+
+    def _apply_filters(self) -> None:
+        table = self._filtered_table()
+        self._render_correlated(table)
+        self.corr_status.value = self._describe_correlated(
+            table, FilterSet(per_column=dict(self.column_filters))
+        )
+
+    def _describe_correlated(
+        self, table: CorrelatedTable | None, filters: FilterSet
+    ) -> str:
+        if table is None or self.correlated_table is None:
+            return "No table yet."
+
+        built = len(self.correlated_table.rows)
+        shown = len(table.rows)
+        parts = []
+        if shown == built:
+            parts.append(f"{shown:,} rows × {len(table.columns)} columns.")
+        else:
+            parts.append(f"{shown:,} of {built:,} rows after filtering.")
+        if shown > MAX_DISPLAYED_ROWS:
+            parts.append(f"Showing the first {MAX_DISPLAYED_ROWS:,}.")
+
+        parts.append(f"One row per {', '.join(table.anchors)}.")
+
+        if self.correlated_table.files_without_anchor:
+            parts.append(
+                f"{self.correlated_table.files_without_anchor} "
+                f"file(s) had none of those segments."
+            )
+        empty = table.empty_columns()
+        if empty:
+            parts.append(f"No values found for {', '.join(empty)}.")
+        if table.ambiguous_cells:
+            parts.append(
+                f"{table.ambiguous_cells:,} cell(s) held several values, shown joined."
+            )
+        if table.recovered_rows:
+            parts.append(
+                f"{table.recovered_rows:,} row(s) come from partially recovered messages."
+            )
+        if filters.unknown:
+            parts.append(f"Not a projected column: {', '.join(filters.unknown)}.")
+        return " ".join(parts)
 
     @staticmethod
     def _build_report_table(problems: list[LoadResult]) -> ft.DataTable:

@@ -92,28 +92,38 @@ def suggested_filename(query: str, when: datetime | None = None) -> str:
     return f"hl7msg_{stem}_{when:%Y%m%d-%H%M}.xlsx"
 
 
-def _write_results_sheet(workbook: Workbook, rows: Sequence[FieldRow]) -> None:
+def _open_sheet(
+    workbook: Workbook, headers: Sequence[str], widths: Sequence[int], row_count: int
+):
+    """Create a results sheet with its header written and framing applied.
+
+    In write-only mode the sheet header XML is emitted on the first append, so
+    freeze panes, filters and widths must all be configured before any row is
+    written -- set afterwards they are silently discarded.
+    """
     sheet = workbook.create_sheet("Results")
 
-    # In write-only mode the sheet header XML is emitted on the first append,
-    # so freeze panes, filters and widths must all be configured before any
-    # row is written -- set afterwards they are silently discarded.
-    for index, width in enumerate(_COLUMN_WIDTHS, start=1):
+    for index, width in enumerate(widths, start=1):
         sheet.column_dimensions[get_column_letter(index)].width = width
 
     # Freeze the header and switch AutoFilter on: filtering is the analyst's
     # very next action after opening the file.
     sheet.freeze_panes = "A2"
-    last_column = get_column_letter(len(EXPORT_COLUMNS))
-    sheet.auto_filter.ref = f"A1:{last_column}{len(rows) + 1}"
+    sheet.auto_filter.ref = f"A1:{get_column_letter(len(headers))}{row_count + 1}"
 
-    header = []
-    for title, _attribute in EXPORT_COLUMNS:
+    header_cells = []
+    for title in headers:
         cell = WriteOnlyCell(sheet, value=title)
         cell.font = Font(bold=True)
         cell.data_type = "s"
-        header.append(cell)
-    sheet.append(header)
+        header_cells.append(cell)
+    sheet.append(header_cells)
+    return sheet
+
+
+def _write_results_sheet(workbook: Workbook, rows: Sequence[FieldRow]) -> None:
+    headers = [title for title, _ in EXPORT_COLUMNS]
+    sheet = _open_sheet(workbook, headers, _COLUMN_WIDTHS, len(rows))
 
     for row in rows:
         cells = []
@@ -134,6 +144,7 @@ def _write_info_sheet(
     row_count: int,
     source_files: Sequence[str],
     recovered_files: Sequence[str] = (),
+    extra: Sequence[tuple[str, object]] = (),
 ) -> None:
     """Record how this extract was produced, for auditability."""
     sheet = workbook.create_sheet("Export Info")
@@ -154,6 +165,8 @@ def _write_info_sheet(
     labelled("Matched on", mode or "n/a")
     labelled("Rows exported", row_count)
     labelled("Source files", len(source_files))
+    for label, value in extra:
+        labelled(label, value)
 
     # Rows from a recovered file are only what survived the damage. Recording
     # it here means an extract can still be traced back to whether partial
@@ -171,6 +184,80 @@ def _write_info_sheet(
         sheet.append([heading])
         for name in source_files:
             sheet.append([_text_cell(sheet, name)])
+
+
+def _prepare_destination(destination: str | Path, row_count: int) -> Path:
+    """Normalise the path and refuse a result set no worksheet can hold."""
+    destination = Path(destination)
+    if destination.suffix.lower() != ".xlsx":
+        # Append rather than replace. Path.with_suffix would cut at the last
+        # dot, turning a legitimate name like "extract.v2" into "extract.xlsx"
+        # and losing part of what the user typed.
+        destination = destination.with_name(destination.name + ".xlsx")
+
+    if row_count + 1 > MAX_EXCEL_ROWS:
+        raise ExportError(
+            f"{row_count:,} rows exceeds the {MAX_EXCEL_ROWS:,}-row limit of an "
+            f"Excel worksheet; narrow the search before exporting"
+        )
+
+    # Make sure the destination is usable before building anything: there is
+    # no point serialising hundreds of thousands of rows only to discover the
+    # directory cannot be created.
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    return destination
+
+
+def write_correlated_xlsx(
+    table,
+    destination: str | Path,
+    *,
+    columns_text: str = "",
+    filter_text: str = "",
+    recovered_files: Sequence[str] = (),
+) -> Path:
+    """Write a CorrelatedTable, one column per projected HL7 path.
+
+    A ``File`` column is prepended so a row can always be traced back to the
+    message it came from; the projected columns follow in the order they were
+    typed.
+    """
+    destination = _prepare_destination(destination, len(table.rows))
+
+    headers = ["File", *table.columns]
+    widths = [30, *(34 for _ in table.columns)]
+
+    workbook = Workbook(write_only=True)
+    try:
+        sheet = _open_sheet(workbook, headers, widths, len(table.rows))
+        for row in table.rows:
+            sheet.append(
+                [
+                    _text_cell(sheet, row.file_name),
+                    *(_text_cell(sheet, value) for value in row.cells),
+                ]
+            )
+
+        source_files = sorted({row.file_name for row in table.rows})
+        _write_info_sheet(
+            workbook,
+            query=columns_text,
+            mode="correlated projection",
+            row_count=len(table.rows),
+            source_files=source_files,
+            recovered_files=recovered_files,
+            extra=(
+                ("Columns", " ".join(table.columns)),
+                ("Filters", filter_text or "(none)"),
+                ("Row grain", ", ".join(table.anchors)),
+                ("Ambiguous cells", table.ambiguous_cells),
+                ("Rows from partial messages", table.recovered_rows),
+            ),
+        )
+        workbook.save(destination)
+    finally:
+        workbook.close()
+    return destination
 
 
 def write_xlsx(
@@ -192,23 +279,7 @@ def write_xlsx(
     Returns the path written. Raises ExportError if the result set cannot fit
     a worksheet.
     """
-    destination = Path(destination)
-    if destination.suffix.lower() != ".xlsx":
-        # Append rather than replace. Path.with_suffix would cut at the last
-        # dot, turning a legitimate name like "extract.v2" into "extract.xlsx"
-        # and losing part of what the user typed.
-        destination = destination.with_name(destination.name + ".xlsx")
-
-    if len(rows) + 1 > MAX_EXCEL_ROWS:
-        raise ExportError(
-            f"{len(rows):,} rows exceeds the {MAX_EXCEL_ROWS:,}-row limit of an "
-            f"Excel worksheet; narrow the search before exporting"
-        )
-
-    # Make sure the destination is usable before building anything: there is
-    # no point serialising 393,000 rows only to discover the directory cannot
-    # be created.
-    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination = _prepare_destination(destination, len(rows))
 
     workbook = Workbook(write_only=True)
     try:

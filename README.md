@@ -74,6 +74,43 @@ a surprising result is always explainable.
 Results are capped at 500 displayed rows; the status line reports the true
 total.
 
+## Correlated tables
+
+The **Correlated table** tab answers a different question: not "where does
+this value appear?" but "for each observation, what were its code, its
+description and its result?". Two boxes:
+
+**Columns** — HL7 paths separated by spaces. These become the table's columns.
+
+```
+MSH.4.HD.1  OBR.4.CE.2  OBX.3.CE.2  OBX.5  OBX.11
+```
+
+**Search** — `PATH: value` terms, also space-separated. Each filters **only
+its own column**, by case-insensitive substring, and terms combine with AND.
+
+```
+OBX.5: Ye   OBX.11: F
+```
+
+`OBX.5: Ye` keeps rows whose `OBX.5` cell contains those characters — `Yes`,
+`Yes, resolved` — and looks at no other column. Each column heading carries
+the same filter as a text box; typing in either updates the other.
+
+A row is one **segment occurrence**, not one file. Values align by where they
+sit in the message: a once-per-message value like `MSH.4.HD.1` repeats down
+every row, an order-level value reaches only its own observations, and
+observation-level values stay distinct. So filtering `MSH.4.HD.1` removes
+whole messages while filtering `OBX.5` removes individual observations —
+without you choosing a mode. The reach follows from where the column sits.
+
+On the reference corpus that projection is 30,889 rows from 848 files, built
+in about half a second, with filters re-applying in ~12ms. Export writes the
+filtered table with a `File` column prepended.
+
+See [docs/HLD-correlated-search.md](docs/HLD-correlated-search.md) for the
+design and the measurements behind it.
+
 ## Exporting
 
 **Export to Excel…** writes the current result set to an `.xlsx` workbook.
@@ -127,6 +164,7 @@ src/hl7msg/
   pathspec.py   tag-chain collapsing; path-spec detection and matching
   parser.py     HL7 XML -> rows; strict first, lxml recovery as fallback
   search.py     the four-branch search engine
+  correlate.py  several paths projected into one table, one row per segment
   store.py      in-memory Dataset + search index (the Phase 2 SQLite seam)
   export.py     filtered results -> .xlsx
   ui/app.py     Flet desktop UI - the only module that imports flet
@@ -147,8 +185,9 @@ normalisation.
 .venv\Scripts\python.exe -m pytest -q
 ```
 
-128 tests covering the collapsing rules, parsing (including mixed content),
-all four search branches, the dataset index, Excel export (read back from the
+206 tests covering the collapsing rules, parsing (including mixed content and
+damaged-file recovery), all four search branches, correlated projection and
+per-column filtering, the dataset indexes, Excel export (read back from the
 written workbooks), UI wiring driven through a stub page, and a benchmark
 asserting search stays under the HLD's one-second budget at 50,000 rows.
 

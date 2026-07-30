@@ -7,7 +7,7 @@
 | Document Type | High-Level Design |
 | Subject System | HL7 Message Data Explorer (`hl7msg`) — search subsystem |
 | Builds On | `Sick_Cert_App_HLD.docx`, sections 5.5 and 7 |
-| Status | Draft for Review |
+| Status | **Implemented** — see §13 for where the build diverged from this design |
 | Grounding | Measured against the 909-message reference corpus (406,090 rows) |
 
 ---
@@ -135,9 +135,9 @@ once-per-message value reaches a per-observation row.
 
 Three concepts, in order.
 
-**Occurrence signature.** Every row already carries one, latent in its
-`full_path`: the ordered list of indexed repeats. This is the correlation
-primitive, and it requires **no parser change**.
+**Occurrence chain.** The ordered list of repeating elements a value sits
+inside. This is the correlation primitive, recorded on every row by the parser
+as `FieldRow.occurrence`.
 
 | Row | Signature |
 |---|---|
@@ -469,3 +469,52 @@ the columns box rebuilds, editing the search box does not.
   become column headers.
 - **Cross-file correlation** — matching on a shared patient identifier rather
   than on segment position. A materially harder problem, deliberately deferred.
+
+---
+
+## 13. Implementation Notes — Where The Build Diverged
+
+Two things in this design did not survive contact with the data. Both changes
+are in the shipped code; the sections above have been corrected to match.
+
+### 13.1 The occurrence chain is recorded, not derived
+
+This design said the chain could be read out of `full_path` and so needed
+**no parser change**. It cannot. `full_path` joins already-dotted tag names
+with dots, so tag boundaries are gone by the time it is stored: a field-level
+repeat such as `PID.3[2]` survives only as a `3[2]` token, indistinguishable
+from any other field numbered 3 in any other segment.
+
+`FieldRow` therefore gained an `occurrence` field, populated in `_walk` where
+the tag labels are still intact and unambiguous. Chains repeat heavily — most
+rows of a message share one — so they are interned, and the memory cost of
+adding them to 406,090 rows is negligible.
+
+### 13.2 The grain is the union of the deepest columns, not one of them
+
+This design nominated a single anchor: "the projection's deepest column",
+with ties broken by typing order. That is wrong in a way the corpus exposes
+immediately. `OBX.3.CE.1`, `OBX.3.CE.2`, `OBX.5` and `OBX.11` all sit at
+observation level, and they do not appear in exactly the same observations. A
+single anchor silently drops any observation that carries one of the others
+but not the anchor — and makes the row count depend on which column happened
+to be typed first.
+
+The build instead takes **every** column at the deepest level as an anchor and
+grains on the union of their occurrences. An anchor column contributes only
+its own occurrence to a row, never a broadcast from a shallower one, so rows
+stay exactly as fine as they should be.
+
+Measured difference on the corpus: **30,889 rows against 30,679** — 210
+observations that a single anchor would have lost. Ambiguous cells also fell
+from 22 to 10, because anchor columns no longer pick up broadcasts.
+
+### 13.3 Measured against the targets
+
+| | Target | Measured |
+|---|---|---|
+| Build, 6-column projection over 909 files | < 1s | **0.51s** |
+| Re-filter cached table | < 100ms | **11.6ms** |
+| Rows, OBX-level projection | — | 30,889 from 848 files |
+| `OBX.11: F` ∧ `OBX.3.CE.2: Medication` | intersect | 30,586 ∧ 973 → **967** |
+| Tests | — | 206 passing |

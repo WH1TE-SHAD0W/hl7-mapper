@@ -96,8 +96,25 @@ class Dataset:
             self.rows.append(row)
             self.values_lower.append(row.value.lower())
             self.path_rows[self._path_id(row)].append(index)
+            self.rows_by_file.setdefault(row.file_name, []).append(index)
+            self.rows_by_path.setdefault(row.path, []).append(index)
             added += 1
         return added
+
+    def file_rows(self, file_name: str) -> list[FieldRow]:
+        """Every row parsed from one file, in document order."""
+        return [self.rows[i] for i in self.rows_by_file.get(file_name, ())]
+
+    def occurrence_depth(self, path: str) -> int:
+        """Deepest repeat nesting seen at ``path``.
+
+        Used to pick the anchor of a projection: the column nested inside the
+        most repeats defines the finest grain the table can have.
+        """
+        return max(
+            (len(self.rows[i].occurrence) for i in self.rows_by_path.get(path, ())),
+            default=0,
+        )
 
     def add_file(self, path: str | Path) -> LoadResult:
         """Parse and index one file, reporting failure rather than raising.
@@ -137,6 +154,8 @@ class Dataset:
         self.path_rows.clear()
         self._path_ids.clear()
         self.recovered_files.clear()
+        self.rows_by_file.clear()
+        self.rows_by_path.clear()
 
     def distinct_paths(self) -> list[str]:
         """Every distinct collapsed path present, sorted.

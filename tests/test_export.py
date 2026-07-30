@@ -264,3 +264,86 @@ def test_suggested_filename_strips_characters_illegal_in_a_path():
 
 def test_suggested_filename_falls_back_when_the_query_is_blank():
     assert "all-rows" in suggested_filename("   ", datetime(2026, 1, 2, 3, 4))
+
+
+# -- correlated tables ---------------------------------------------------
+
+
+CORRELATED_SOURCE = b"""<ORU_R01 xmlns="urn:hl7-org:v2xml">
+  <MSH><MSH.10>CERT-1</MSH.10></MSH>
+  <ORU_R01.PATIENT_RESULT><ORU_R01.ORDER_OBSERVATION>
+    <OBR><OBR.4><CE.2>Bloods</CE.2></OBR.4></OBR>
+    <ORU_R01.OBSERVATION><OBX><OBX.3><CE.2>Thyroid</CE.2></OBX.3>
+      <OBX.5>Yes</OBX.5></OBX></ORU_R01.OBSERVATION>
+    <ORU_R01.OBSERVATION><OBX><OBX.3><CE.2>Headache</CE.2></OBX.3>
+      <OBX.5>=1+1</OBX.5></OBX></ORU_R01.OBSERVATION>
+  </ORU_R01.ORDER_OBSERVATION></ORU_R01.PATIENT_RESULT>
+</ORU_R01>"""
+
+
+@pytest.fixture
+def correlated():
+    from hl7msg.correlate import CorrelationEngine
+    from hl7msg.parser import parse_bytes
+    from hl7msg.store import Dataset
+
+    data = Dataset()
+    data.extend(parse_bytes(CORRELATED_SOURCE, "cert.xml").rows)
+    return CorrelationEngine(data).search("MSH.10 OBR.4.CE.2 OBX.3.CE.2 OBX.5")
+
+
+def test_correlated_export_uses_the_projection_as_headers(tmp_path, correlated):
+    from hl7msg.export import write_correlated_xlsx
+
+    out = write_correlated_xlsx(correlated, tmp_path / "out.xlsx")
+    headers = [c.value for c in next(read_sheet(out).iter_rows(max_row=1))]
+    assert headers == ["File", "MSH.10", "OBR.4.CE.2", "OBX.3.CE.2", "OBX.5"]
+
+
+def test_correlated_export_writes_one_row_per_segment(tmp_path, correlated):
+    from hl7msg.export import write_correlated_xlsx
+
+    out = write_correlated_xlsx(correlated, tmp_path / "out.xlsx")
+    written = data_rows(read_sheet(out))
+    assert written == [
+        ["cert.xml", "CERT-1", "Bloods", "Thyroid", "Yes"],
+        ["cert.xml", "CERT-1", "Bloods", "Headache", "=1+1"],
+    ]
+
+
+def test_correlated_export_keeps_a_formula_looking_cell_literal(tmp_path, correlated):
+    from hl7msg.export import write_correlated_xlsx
+
+    out = write_correlated_xlsx(correlated, tmp_path / "out.xlsx")
+    cell = read_sheet(out).cell(row=3, column=5)
+    assert cell.value == "=1+1"
+    assert cell.data_type == "s"
+
+
+def test_correlated_export_is_framed_like_the_flat_one(tmp_path, correlated):
+    from hl7msg.export import write_correlated_xlsx
+
+    out = write_correlated_xlsx(correlated, tmp_path / "out.xlsx")
+    sheet = read_sheet(out)
+    assert sheet.freeze_panes == "A2"
+    assert sheet.auto_filter.ref == "A1:E3"
+
+
+def test_correlated_export_records_columns_filters_and_grain(tmp_path, correlated):
+    from hl7msg.export import write_correlated_xlsx
+
+    out = write_correlated_xlsx(
+        correlated,
+        tmp_path / "out.xlsx",
+        columns_text="MSH.10 OBR.4.CE.2 OBX.3.CE.2 OBX.5",
+        filter_text="OBX.5: Ye",
+    )
+    info = {
+        row[0].value: row[1].value
+        for row in load_workbook(out)["Export Info"].iter_rows(max_row=12)
+        if row[0].value
+    }
+    assert info["Columns"] == "MSH.10 OBR.4.CE.2 OBX.3.CE.2 OBX.5"
+    assert info["Filters"] == "OBX.5: Ye"
+    assert "OBX.3.CE.2" in info["Row grain"]
+    assert info["Rows exported"] == 2

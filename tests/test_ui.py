@@ -397,6 +397,213 @@ def test_closing_the_report_pops_the_dialog():
     assert app.page.dialogs == []
 
 
+# -- correlated view -----------------------------------------------------
+
+
+CORR_SOURCE = b"""<ORU_R01 xmlns="urn:hl7-org:v2xml">
+  <MSH><MSH.10>CERT-1</MSH.10></MSH>
+  <ORU_R01.PATIENT_RESULT><ORU_R01.ORDER_OBSERVATION>
+    <OBR><OBR.4><CE.2>Bloods</CE.2></OBR.4></OBR>
+    <ORU_R01.OBSERVATION><OBX><OBX.3><CE.2>Thyroid</CE.2></OBX.3>
+      <OBX.5>Yes</OBX.5><OBX.11>F</OBX.11></OBX></ORU_R01.OBSERVATION>
+    <ORU_R01.OBSERVATION><OBX><OBX.3><CE.2>Headache</CE.2></OBX.3>
+      <OBX.5>No</OBX.5><OBX.11>C</OBX.11></OBX></ORU_R01.OBSERVATION>
+    <ORU_R01.OBSERVATION><OBX><OBX.3><CE.2>Cough</CE.2></OBX.3>
+      <OBX.5>Yes, resolved</OBX.5><OBX.11>F</OBX.11></OBX></ORU_R01.OBSERVATION>
+  </ORU_R01.ORDER_OBSERVATION></ORU_R01.PATIENT_RESULT>
+</ORU_R01>"""
+
+
+@pytest.fixture
+def corr_app():
+    from hl7msg.parser import parse_bytes
+
+    application = ExplorerApp(StubDialogPage())
+    application.build()
+    application.dataset.extend(parse_bytes(CORR_SOURCE, "cert.xml").rows)
+    return application
+
+
+def corr_rows(app):
+    return app.corr_results_area.controls[0].rows
+
+
+def corr_values(app):
+    return [
+        tuple(c.content.content.value for c in row.cells) for row in corr_rows(app)
+    ]
+
+
+def test_building_a_table_projects_the_named_columns(corr_app):
+    corr_app.columns_field.value = "OBR.4.CE.2 OBX.3.CE.2 OBX.5"
+    drive(corr_app.on_build_table(None))
+
+    assert corr_values(corr_app) == [
+        ("Bloods", "Thyroid", "Yes"),
+        ("Bloods", "Headache", "No"),
+        ("Bloods", "Cough", "Yes, resolved"),
+    ]
+    assert "3 rows × 3 columns" in corr_app.corr_status.value
+
+
+def test_a_filter_narrows_by_that_column_only(corr_app):
+    corr_app.columns_field.value = "OBX.3.CE.2 OBX.5"
+    drive(corr_app.on_build_table(None))
+
+    corr_app.filter_field.value = "OBX.5: Ye"
+    drive(corr_app.on_filter_changed(None))
+
+    assert corr_values(corr_app) == [("Thyroid", "Yes"), ("Cough", "Yes, resolved")]
+    assert "2 of 3 rows" in corr_app.corr_status.value
+
+
+def test_filters_on_two_columns_intersect(corr_app):
+    corr_app.columns_field.value = "OBX.3.CE.2 OBX.5 OBX.11"
+    drive(corr_app.on_build_table(None))
+
+    corr_app.filter_field.value = "OBX.5: Ye  OBX.11: F"
+    drive(corr_app.on_filter_changed(None))
+
+    assert [v[0] for v in corr_values(corr_app)] == ["Thyroid", "Cough"]
+
+    corr_app.filter_field.value = "OBX.5: Ye  OBX.11: C"
+    drive(corr_app.on_filter_changed(None))
+    assert corr_values(corr_app) == []
+
+
+def test_a_column_heading_filter_updates_the_search_box(corr_app):
+    corr_app.columns_field.value = "OBX.3.CE.2 OBX.5"
+    drive(corr_app.on_build_table(None))
+
+    heading = corr_app.corr_results_area.controls[0].columns[1]
+    box = heading.label.content.controls[1]
+    assert box.data == "OBX.5"
+
+    box.value = "Ye"
+    drive(corr_app.on_column_filter_changed(_FakeEvent(box)))
+
+    assert corr_app.filter_field.value == "OBX.5: Ye"
+    assert len(corr_rows(corr_app)) == 2
+
+
+def test_the_search_box_populates_the_column_headings(corr_app):
+    corr_app.columns_field.value = "OBX.3.CE.2 OBX.5"
+    drive(corr_app.on_build_table(None))
+
+    corr_app.filter_field.value = "OBX.5: No"
+    drive(corr_app.on_filter_changed(None))
+
+    heading = corr_app.corr_results_area.controls[0].columns[1]
+    assert heading.label.content.controls[1].value == "No"
+
+
+def test_clearing_a_column_heading_removes_its_filter(corr_app):
+    corr_app.columns_field.value = "OBX.3.CE.2 OBX.5"
+    drive(corr_app.on_build_table(None))
+
+    heading = corr_app.corr_results_area.controls[0].columns[1]
+    box = heading.label.content.controls[1]
+    box.value = "Ye"
+    drive(corr_app.on_column_filter_changed(_FakeEvent(box)))
+    assert len(corr_rows(corr_app)) == 2
+
+    box = corr_app.corr_results_area.controls[0].columns[1].label.content.controls[1]
+    box.value = ""
+    drive(corr_app.on_column_filter_changed(_FakeEvent(box)))
+    assert len(corr_rows(corr_app)) == 3
+    assert corr_app.filter_field.value == ""
+
+
+def test_rebuilding_drops_filters_for_columns_no_longer_shown(corr_app):
+    corr_app.columns_field.value = "OBX.3.CE.2 OBX.5"
+    drive(corr_app.on_build_table(None))
+    corr_app.filter_field.value = "OBX.5: Ye"
+    drive(corr_app.on_filter_changed(None))
+    assert corr_app.column_filters == {"OBX.5": "Ye"}
+
+    corr_app.columns_field.value = "OBX.3.CE.2 OBX.11"
+    drive(corr_app.on_build_table(None))
+    assert corr_app.column_filters == {}
+    assert len(corr_rows(corr_app)) == 3
+
+
+def test_building_without_messages_says_so():
+    application = ExplorerApp(StubDialogPage())
+    application.build()
+    application.columns_field.value = "OBX.5"
+    drive(application.on_build_table(None))
+    assert application.corr_status.value == "No messages loaded yet."
+
+
+def test_building_with_no_columns_says_so(corr_app):
+    corr_app.columns_field.value = "   "
+    drive(corr_app.on_build_table(None))
+    assert "at least one HL7 path" in corr_app.corr_status.value
+
+
+def test_a_mistyped_column_is_reported(corr_app):
+    corr_app.columns_field.value = "OBX.3.CE.2 OBX.99"
+    drive(corr_app.on_build_table(None))
+    assert "No values found for OBX.99" in corr_app.corr_status.value
+
+
+def test_a_filter_naming_an_unprojected_column_is_reported(corr_app):
+    corr_app.columns_field.value = "OBX.3.CE.2"
+    drive(corr_app.on_build_table(None))
+
+    corr_app.filter_field.value = "OBX.5: Ye"
+    drive(corr_app.on_filter_changed(None))
+    assert "Not a projected column: OBX.5" in corr_app.corr_status.value
+
+
+def test_correlated_export_writes_the_filtered_table(corr_app, tmp_path):
+    from openpyxl import load_workbook
+
+    corr_app.columns_field.value = "OBX.3.CE.2 OBX.5"
+    drive(corr_app.on_build_table(None))
+    corr_app.filter_field.value = "OBX.5: Ye"
+    drive(corr_app.on_filter_changed(None))
+
+    destination = tmp_path / "corr.xlsx"
+    corr_app.picker = StubPicker(str(destination))
+    drive(corr_app.on_export_correlated(None))
+
+    sheet = load_workbook(destination)["Results"]
+    written = [[c.value for c in row] for row in sheet.iter_rows(min_row=2)]
+    assert written == [
+        ["cert.xml", "Thyroid", "Yes"],
+        ["cert.xml", "Cough", "Yes, resolved"],
+    ]
+    assert "Exported 2 rows" in corr_app.corr_status.value
+
+
+def test_correlated_export_before_building_says_so(corr_app, tmp_path):
+    corr_app.picker = StubPicker(str(tmp_path / "x.xlsx"))
+    drive(corr_app.on_export_correlated(None))
+    assert "Nothing to export" in corr_app.corr_status.value
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_clear_resets_the_correlated_view(corr_app):
+    corr_app.columns_field.value = "OBX.3.CE.2 OBX.5"
+    drive(corr_app.on_build_table(None))
+    corr_app.filter_field.value = "OBX.5: Ye"
+    drive(corr_app.on_filter_changed(None))
+
+    drive(corr_app.on_clear(None))
+    assert corr_app.correlated_table is None
+    assert corr_app.column_filters == {}
+    assert corr_app.columns_field.value == ""
+    assert corr_app.filter_field.value == ""
+
+
+class _FakeEvent:
+    """Stands in for a Flet control event."""
+
+    def __init__(self, control):
+        self.control = control
+
+
 def test_clear_disables_the_report_button(app):
     from hl7msg.store import LoadResult
 
