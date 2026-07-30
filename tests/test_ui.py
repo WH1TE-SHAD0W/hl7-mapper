@@ -263,8 +263,8 @@ def test_load_summary_counts_files_and_reports_failures():
         ]
     )
     assert "Loaded 2 files, 78 rows." in summary
-    assert "Skipped 1" in summary
-    assert "notes.xml" in summary
+    assert "1 could not be read at all." in summary
+    assert "See Load report." in summary
 
 
 def test_load_summary_is_singular_for_one_file():
@@ -273,3 +273,136 @@ def test_load_summary_is_singular_for_one_file():
     assert "Loaded 1 file, 12 rows." in ExplorerApp._describe_load(
         [LoadResult("a.xml", 12)]
     )
+
+
+def test_load_summary_says_recovered_files_are_only_partial():
+    from hl7msg.store import LoadResult
+
+    summary = ExplorerApp._describe_load(
+        [
+            LoadResult("a.xml", 400),
+            LoadResult("b.xml", 60, recovered=True, issues=("line 9: expected '>'",)),
+            LoadResult("c.xml", 25, recovered=True, issues=("line 3: expected '>'",)),
+        ]
+    )
+    assert "Loaded 3 files, 485 rows." in summary
+    assert "2 damaged and only partly recovered (85 rows)." in summary
+    assert "could not be read" not in summary
+
+
+def test_a_clean_load_says_nothing_about_reports():
+    from hl7msg.store import LoadResult
+
+    summary = ExplorerApp._describe_load([LoadResult("a.xml", 40)])
+    assert "Load report" not in summary
+    assert "recovered" not in summary
+
+
+# -- load report ---------------------------------------------------------
+
+
+class StubDialogPage(StubPage):
+    """Records dialogs instead of showing them."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.dialogs: list = []
+
+    def show_dialog(self, dialog) -> None:
+        self.dialogs.append(dialog)
+
+    def pop_dialog(self) -> None:
+        self.dialogs.pop()
+
+
+def load_app_with(results):
+    app = ExplorerApp(StubDialogPage())
+    app.build()
+    app.last_load = results
+    app.report_button.disabled = not any(r.needs_attention for r in results)
+    return app
+
+
+def test_report_button_is_disabled_until_something_goes_wrong():
+    from hl7msg.store import LoadResult
+
+    clean = load_app_with([LoadResult("a.xml", 40)])
+    assert clean.report_button.disabled is True
+
+    damaged = load_app_with([LoadResult("a.xml", 40, recovered=True)])
+    assert damaged.report_button.disabled is False
+
+
+def test_report_lists_failures_before_recoveries():
+    from hl7msg.store import LoadResult
+
+    app = load_app_with(
+        [
+            LoadResult("z_recovered.xml", 60, recovered=True, issues=("line 9: bad",)),
+            LoadResult("a_failed.xml", 0, error="not HL7"),
+            LoadResult("clean.xml", 400),
+        ]
+    )
+    drive(app.on_show_report(None))
+
+    dialog = app.page.dialogs[-1]
+    table = dialog.content.content.controls[0]
+    names = [r.cells[0].content.content.value for r in table.rows]
+    outcomes = [r.cells[1].content.content.value for r in table.rows]
+
+    # Clean files are not listed at all; failures come first.
+    assert names == ["a_failed.xml", "z_recovered.xml"]
+    assert outcomes == ["Failed", "Recovered"]
+
+
+def test_report_shows_row_counts_and_the_first_problem():
+    from hl7msg.store import LoadResult
+
+    app = load_app_with(
+        [
+            LoadResult(
+                "damaged.xml",
+                1234,
+                recovered=True,
+                issues=("line 258, column 2: expected '>'", "line 9: something else"),
+            )
+        ]
+    )
+    drive(app.on_show_report(None))
+
+    table = app.page.dialogs[-1].content.content.controls[0]
+    cells = [c.content.content.value for c in table.rows[0].cells]
+    assert cells[0] == "damaged.xml"
+    assert cells[2] == "1,234"
+    assert cells[3] == "line 258, column 2: expected '>'"
+
+
+def test_report_on_a_clean_load_says_so_without_opening_a_dialog():
+    from hl7msg.store import LoadResult
+
+    app = load_app_with([LoadResult("a.xml", 40)])
+    drive(app.on_show_report(None))
+    assert app.page.dialogs == []
+    assert "nothing to report" in app.status.value
+
+
+def test_closing_the_report_pops_the_dialog():
+    from hl7msg.store import LoadResult
+
+    app = load_app_with([LoadResult("a.xml", 0, error="not HL7")])
+    drive(app.on_show_report(None))
+    assert len(app.page.dialogs) == 1
+
+    drive(app.on_close_report(None))
+    assert app.page.dialogs == []
+
+
+def test_clear_disables_the_report_button(app):
+    from hl7msg.store import LoadResult
+
+    app.last_load = [LoadResult("a.xml", 0, error="not HL7")]
+    app.report_button.disabled = False
+
+    drive(app.on_clear(None))
+    assert app.last_load == []
+    assert app.report_button.disabled is True

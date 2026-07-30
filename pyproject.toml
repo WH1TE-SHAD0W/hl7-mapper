@@ -3,7 +3,7 @@ name = "hl7msg"
 version = "0.1.0"
 description = "HL7 Message Data Explorer - flatten and search HL7 v2 XML messages"
 requires-python = ">=3.10"
-dependencies = ["flet[desktop]==0.86.4", "openpyxl>=3.1"]
+dependencies = ["flet[desktop]==0.86.4", "openpyxl>=3.1", "lxml>=6.1"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]

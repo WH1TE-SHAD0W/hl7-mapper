@@ -16,7 +16,7 @@ def sample_path() -> Path:
 
 @pytest.fixture
 def sample_rows():
-    return parse_file(SAMPLE)
+    return parse_file(SAMPLE).rows
 
 
 @pytest.fixture

@@ -80,3 +80,72 @@ def test_extend_reports_how_many_rows_it_added():
     data = Dataset()
     assert data.extend([row("MSH.10", "a"), row("MSH.10", "b")]) == 2
     assert data.extend([]) == 0
+
+
+# -- recovery ------------------------------------------------------------
+
+GOOD = b"""<ORU_R01 xmlns="urn:hl7-org:v2xml">
+    <MSH><MSH.10>CERT-OK</MSH.10></MSH>
+</ORU_R01>"""
+
+DAMAGED = b"""<REF_I12 xmlns="urn:hl7-org:v2xml">
+    <MSH><MSH.10>CERT-DAMAGED</MSH.10></MSH
+</REF_I12>"""
+
+
+def test_a_good_file_loads_without_the_recovered_flag(tmp_path):
+    path = tmp_path / "good.xml"
+    path.write_bytes(GOOD)
+
+    data = Dataset()
+    result = data.add_file(path)
+
+    assert result.ok
+    assert result.recovered is False
+    assert result.needs_attention is False
+    assert data.recovered_files == set()
+
+
+def test_a_damaged_file_is_recovered_rather_than_skipped(tmp_path):
+    path = tmp_path / "damaged.xml"
+    path.write_bytes(DAMAGED)
+
+    data = Dataset()
+    result = data.add_file(path)
+
+    assert result.ok
+    assert result.recovered is True
+    assert result.needs_attention is True
+    assert result.rows_added > 0
+    assert result.issues
+    assert data.recovered_files == {"damaged.xml"}
+    assert [r.value for r in data.rows] == ["CERT-DAMAGED"]
+
+
+def test_a_damaged_file_does_not_stop_the_batch(tmp_path):
+    (tmp_path / "a_good.xml").write_bytes(GOOD)
+    (tmp_path / "b_damaged.xml").write_bytes(DAMAGED)
+    (tmp_path / "c_notxml.xml").write_bytes(b"<catalog><book>Dune</book></catalog>")
+
+    data = Dataset()
+    results = data.add_files(sorted(tmp_path.glob("*.xml")))
+
+    assert [r.file_name for r in results if r.ok] == ["a_good.xml", "b_damaged.xml"]
+    assert [r.file_name for r in results if not r.ok] == ["c_notxml.xml"]
+    assert [r.file_name for r in results if r.needs_attention] == [
+        "b_damaged.xml",
+        "c_notxml.xml",
+    ]
+    assert len(data) == 2
+
+
+def test_clear_forgets_which_files_were_recovered(tmp_path):
+    path = tmp_path / "damaged.xml"
+    path.write_bytes(DAMAGED)
+
+    data = Dataset()
+    data.add_file(path)
+    assert data.recovered_files
+
+    data.clear()
+    assert data.recovered_files == set()

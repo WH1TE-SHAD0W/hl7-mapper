@@ -125,7 +125,7 @@ indices on repeated segments).
 src/hl7msg/
   model.py      FieldRow - one row per XML leaf node
   pathspec.py   tag-chain collapsing; path-spec detection and matching
-  parser.py     HL7 XML -> rows, with per-file validation
+  parser.py     HL7 XML -> rows; strict first, lxml recovery as fallback
   search.py     the four-branch search engine
   store.py      in-memory Dataset + search index (the Phase 2 SQLite seam)
   export.py     filtered results -> .xlsx
@@ -133,7 +133,13 @@ src/hl7msg/
 ```
 
 Only `ui/app.py` depends on Flet. Everything else is standard library plus
-openpyxl, which is why the whole engine is testable without a GUI.
+openpyxl and lxml, which is why the whole engine is testable without a GUI.
+
+One side effect worth knowing: **openpyxl switches to lxml as its XML backend
+whenever lxml is installed.** That subtly changes export behaviour — a CRLF in
+a value now round-trips intact instead of being normalised to two newlines.
+Nothing is lost either way, but do not write tests that pin one backend's
+normalisation.
 
 ## Tests
 
@@ -177,9 +183,9 @@ of "one row per leaf node" — silently discards every one of these narratives,
 which is precisely the free text an analyst searches by condition. `NTE.3`
 and `OBX.5` are the fields affected. See `_own_text` in `parser.py`.
 
-**73 files (8%) are corrupt** and are rejected rather than partially read.
-The damage is single-character, consistent with a fault in whatever produced
-the anonymized copies rather than with the messages themselves:
+**73 files (8%) are corrupt** and are recovered rather than read whole. The
+damage is single-character, consistent with a fault in whatever produced the
+anonymized copies rather than with the messages themselves:
 
 | Defect | Files | Example |
 |---|---|---|
@@ -188,10 +194,47 @@ the anonymized copies rather than with the messages themselves:
 | Wrong root / truncated body | 10 | `<REF_I12>` wrapping `<OML_O21>`, never closed |
 | Corrupted tag name | 2 | `<CE.6>` closed by `</CxE.6>` |
 
-These are worth regenerating at source. The application reports each rejected
-file by name in the status line and loads the rest; it deliberately does not
-attempt partial recovery, since silently ingesting a truncated message would
-undermine an audit tool.
+These are worth regenerating at source. See [Damaged files](#damaged-files)
+for what the parser does with them meanwhile.
+
+## Damaged files
+
+A well-formed document is parsed strictly with ElementTree. Only when that
+fails does the same call make a second pass with lxml in recovery mode, which
+salvages whatever survived. Nothing chooses between the two — one parse
+function, with recovery as its fallback — and the clean path is byte-identical
+to what it was before recovery existed.
+
+On the reference corpus all 909 files now load, and the 836 undamaged ones
+still produce **exactly 393,255 rows**, which is the check that proves the
+strict path was not disturbed.
+
+| | Files | Rows |
+|---|---|---|
+| Clean | 836 | 393,255 |
+| Recovered (partial) | 73 | 12,835 |
+| Failed | 0 | — |
+| **Total** | **909** | **406,090** |
+
+**Recovered rows are partial — about 37% of what those files would hold if
+intact.** The status line says so after loading, and the **Load report**
+button lists every affected file with the parser's own complaint
+(`line 258, column 2: expected '>'`). `Dataset.recovered_files` carries the
+set, and the Export Info sheet records which sources were partial, so an
+extract can be traced back long after the fact.
+
+### Recovery can misplace data, not only lose it
+
+Where a closing tag is missing, the following siblings become *children* of
+the unclosed element. One real example: `OBX.5` is opened and never closed, so
+`OBX.11` nests inside it and its value ends up at path `OBX.5.11` — a search
+for `OBX.11` will not find it.
+
+Measured scope: 125 of the 12,835 recovered rows (1.0%) sit at a path that
+never appears in a clean file, and most of those are legitimate — the 10
+`ORM_O01` files genuinely contain `ORC` segments the other message types lack.
+Actual mis-nesting is 3 rows, 0.02%. Small, but it is silent, so treat paths
+seen only in recovered files with suspicion.
 
 ## Building the executable
 
